@@ -64,11 +64,19 @@ async function requestFaucet(address) {
     body
   });
   const text = await response.text();
+  const visible = text
+    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  const message = (visible.match(/An error occurred:[^.]+/) || [])[0] || null;
   return {
     url: FAUCET,
     httpStatus: response.status,
     contentType: response.headers.get('content-type'),
-    bodySnippet: text.replace(/\s+/g, ' ').slice(0, 400)
+    message,
+    bodySnippet: visible.slice(0, 400)
   };
 }
 
