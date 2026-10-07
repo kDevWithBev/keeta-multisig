@@ -1,10 +1,10 @@
 # keeta-multisig
 
-Test network only. Not audited. One key per profile.
+One Chrome profile holds one signer key. A spend needs a second profile. The third key is a 24-word paper key shown once. Not audited.
 
-This is an unpacked Chrome extension. It is not published to the Chrome Web Store. It does not use a server, a relay, mainnet, or a Keeta Personal seed.
+The extension can talk to the Keeta test network or the main network. The quorum behavior below was proven on the test network. Mainnet uses the same construction. A mistake on mainnet can move real KTA. There is no faucet on mainnet.
 
-The client is `@keetanetwork/keetanet-client` 0.18.7. `AccountKeyAlgorithm.MULTISIG` is the source for the identifier. The public docs do not describe it.
+This does not use a server, a relay, or a Keeta Personal seed. The client is `@keetanetwork/keetanet-client` 0.18.7. `AccountKeyAlgorithm.MULTISIG` is the source for the identifier. The public docs do not describe it.
 
 ## One-signature result
 
@@ -57,24 +57,30 @@ Each profile holds one signer and no other.
 
 The unlocked key is used for the signing call and then dropped. It is not kept for a later call. The extension does not call `exportPassphrase`. Restore accepts only the paper key this extension showed. It does not import a Keeta Personal seed.
 
-A page talks to `window.keetaMultisig` through the injected provider. `connect()` returns the public addresses and does not sign. `send({ to, amount, token })` opens the approval window. `amount` is a decimal string with up to 18 decimal places. `token` defaults to the test-network base token. The window shows the origin, destination, token, amount, and fee quote before anything is signed. Approving adds one signature share and returns the payload. It does not publish.
+A page talks to `window.keetaMultisig` through the injected provider. `connect()` returns the public addresses and does not sign. `send({ to, amount, token })` opens the approval window. `amount` is a decimal string with up to 18 decimal places. `token` defaults to that network's base token. The window shows the origin, destination, token, amount, and fee quote before anything is signed. Approving adds one signature share and returns the payload. It does not publish.
 
 Paste that payload into the other profile. That profile shows the same block fields. The origin in the payload is labeled as the stated origin and is not part of the signed block. Approving there adds the second share and publishes. The publishing profile pays the network fee from its own test KTA. Request that from the test faucet in the profile that will publish.
 
 To spend with the paper key, load the extension in a third profile and restore those words, then paste the multisig, the storage account, and one of the other public keys. On the profile that still has its key, put the paper key's public key in “Other signer used on the next send” before building a new payload. There is no relay.
 
-`demo/index.html` is a page that calls the provider. For `file://`, allow file access for the extension.
-
-## Load the unpacked extension
-
-From the tagged commit:
+## Load it
 
 ```
 git clone https://github.com/surfingdegen/keeta-multisig.git
 cd keeta-multisig
-git checkout v0.1.1
+git checkout v0.2.0
 ```
 
-Chrome: `chrome://extensions` → Developer mode → Load unpacked → the `extension/` directory in that checkout.
+Chrome: `chrome://extensions` → Developer mode → Load unpacked → the `extension/` directory.
 
-Use a separate Chrome profile for each signer. The recovery phrase is shown once. Write it on paper. It is not stored.
+Use a separate Chrome profile for each signer. On the first screen, choose the test network until a small send has worked. The main network requires the confirmation checkbox. The recovery phrase is shown once. Write it on paper. It is not stored.
+
+The home screen buttons are labeled **Copy this profile**, **Copy multisig**, and **Copy storage account**. The joining profile pastes them in that order: multisig, storage account, then the other profile's public key.
+
+Finish both signatures within 5 minutes of the block time. A representative refuses an older block. If the fee line says the network did not return a quote, you can still sign. The profile that publishes pays the fee from its own KTA.
+
+`demo/index.html` calls `window.keetaMultisig`. Serve it over http. The extension does not inject into `file://` pages.
+
+## Chrome Web Store
+
+The upload package is `keeta-multisig-0.2.0.zip`. Listing text is in [STORE.md](STORE.md). The privacy policy is [PRIVACY.md](PRIVACY.md). Publishing requires your own Chrome Web Store developer account. This repository does not submit the listing for you.

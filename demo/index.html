@@ -15,7 +15,7 @@
 <body>
   <main>
     <h1>Test network only</h1>
-    <p>This page uses <code>window.keetaMultisig</code> injected by the unpacked extension. It does not use a server. Load the extension, then open this file. For a <code>file://</code> page, turn on “Allow access to file URLs” for the extension.</p>
+    <p>This page uses <code>window.keetaMultisig</code> injected by the extension. It does not use a server. Serve this file over http. The extension does not inject into <code>file://</code> pages.</p>
     <p><button id="connect" type="button">Connect</button></p>
     <label>Destination <input id="to" autocomplete="off" spellcheck="false"></label>
     <label>Amount, decimal KTA <input id="amount" value="0.01" autocomplete="off"></label>

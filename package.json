@@ -1,10 +1,10 @@
 {
   "name": "keeta-multisig",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "private": true,
   "license": "MIT",
   "type": "module",
-  "description": "Test-network unpacked Chrome extension for a 2-of-3 Keeta multisig. Not audited.",
+  "description": "Chrome extension for a 2-of-3 Keeta multisig. Test network or main network. Not audited.",
   "scripts": {
     "probe": "node scripts/probe-multisig.mjs",
     "check": "node scripts/check-shares.mjs && node scripts/check-payload.mjs",

@@ -41,6 +41,12 @@ main {
   margin-bottom: 16px;
 }
 
+.banner.main { background: rgba(141, 46, 42, 0.08); }
+
+.guide { margin: 0 0 12px; padding-left: 18px; }
+.guide li { margin: 0 0 6px; }
+.choice { margin: 6px 0; }
+
 h1 {
   font-size: 28px;
   font-weight: 500;

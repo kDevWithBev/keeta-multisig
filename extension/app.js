@@ -128442,9 +128442,16 @@ ${values.join("\n")}` : `${blockName} :`;
   var SALT_LABEL = "github.com/surfingdegen/keeta-multisig/signer/v1";
   var FORBIDDEN_SALT_LABEL = "keeta.com/wallet/seed/v1";
   var TEST_NETWORK_ID = 1413829460n;
+  var MAIN_NETWORK_ID = 21378n;
   var TOKEN_DECIMALS = 18;
   if (SALT_LABEL === FORBIDDEN_SALT_LABEL) {
     throw new Error("Refusing the wallet salt");
+  }
+  function networkNameFromId(id) {
+    const value = typeof id === "bigint" ? id : BigInt(id);
+    if (value === TEST_NETWORK_ID) return "test";
+    if (value === MAIN_NETWORK_ID) return "main";
+    throw new Error("The block is on an unknown network");
   }
   function createProtocol(KeetaNet2) {
     const { Account: Account2, Block: Block2 } = KeetaNet2.lib;
@@ -128507,7 +128514,7 @@ ${values.join("\n")}` : `${blockName} :`;
       const network = typeof unsigned.network === "bigint" ? unsigned.network : BigInt(unsigned.network);
       if (unsigned.version !== 2) throw new Error("The block version is not 2");
       if (unsigned.purpose !== Block2.Purpose.GENERIC) throw new Error("The block purpose is not a send");
-      if (network !== TEST_NETWORK_ID) throw new Error("The block is not on the test network");
+      const networkName = networkNameFromId(network);
       if (!unsigned.operations || unsigned.operations.length !== 1) {
         throw new Error("The block must contain one SEND");
       }
@@ -128523,7 +128530,9 @@ ${values.join("\n")}` : `${blockName} :`;
         token: address(op.token),
         amount,
         leaves,
-        hash: unsigned.hash.toString()
+        hash: unsigned.hash.toString(),
+        network: networkName,
+        date: unsigned.date instanceof Date ? unsigned.date.toISOString() : String(unsigned.date)
       };
     }
     async function openUnsigned(json) {
@@ -128574,6 +128583,9 @@ ${values.join("\n")}` : `${blockName} :`;
       return { json, described: describe(opened) };
     }
     function assertProfile(described, profile) {
+      if (profile.network && described.network !== profile.network) {
+        throw new Error("The block is on a different network than this profile");
+      }
       if (described.account !== profile.vault) {
         throw new Error("The block account is not this profile's vault");
       }
@@ -128665,7 +128677,7 @@ ${values.join("\n")}` : `${blockName} :`;
     function payloadFrom(json, shares, statedOrigin) {
       return {
         v: 1,
-        network: "test",
+        network: networkNameFromId(json.network),
         statedOrigin: statedOrigin || null,
         unsigned: json,
         shares
@@ -128678,8 +128690,11 @@ ${values.join("\n")}` : `${blockName} :`;
         if (!text) throw new Error("Paste the payload");
         payload = JSON.parse(text);
       }
-      if (!payload || payload.v !== 1 || payload.network !== "test" || !payload.unsigned) {
-        throw new Error("This is not a test-network payload from this extension");
+      if (!payload || payload.v !== 1 || payload.network !== "test" && payload.network !== "main" || !payload.unsigned) {
+        throw new Error("This is not a payload from this extension");
+      }
+      if (networkNameFromId(payload.unsigned.network) !== payload.network) {
+        throw new Error("The payload network does not match the block");
       }
       if (!Array.isArray(payload.shares)) throw new Error("The payload has no share list");
       if (payload.unsigned.signatures || payload.unsigned.signature) {
@@ -128729,7 +128744,9 @@ ${values.join("\n")}` : `${blockName} :`;
     log: "",
     balances: null,
     salt: null,
-    preparing: false
+    preparing: false,
+    networkChoice: "test",
+    mainConfirmed: false
   };
   function h(tag, attrs, kids) {
     const node = document.createElement(tag);
@@ -128750,8 +128767,25 @@ ${values.join("\n")}` : `${blockName} :`;
     node.addEventListener("click", onclick);
     return node;
   }
+  function profileNetwork() {
+    const name = view.profile && view.profile.network;
+    if (name === "main" || name === "test") return name;
+    return view.networkChoice === "main" ? "main" : "test";
+  }
+  function networkWord() {
+    return profileNetwork() === "main" ? "main network" : "test network";
+  }
+  function plainError(message) {
+    const text = String(message || "");
+    if (/refusing to issue vote/i.test(text) || /block dated/i.test(text)) {
+      return "This block is too old for a representative to vote on. Start the send again and finish both signatures within 5 minutes.";
+    }
+    return text;
+  }
   function banner() {
-    return h("div", { class: "banner" }, ["Test network only. One signer key in this profile."]);
+    const main = profileNetwork() === "main";
+    const text = main ? "Main network. One signer key in this profile. Not audited." : "Test network. One signer key in this profile. Not audited.";
+    return h("div", { class: main ? "banner main" : "banner" }, [text]);
   }
   function passwordNote() {
     if (!view.passkeyFailed && (!view.profile || view.profile.method !== "password")) return null;
@@ -128847,7 +128881,8 @@ ${values.join("\n")}` : `${blockName} :`;
       vault: profile.vault || null,
       vaultOwned: profile.vaultOwned === true,
       coSigner: profile.coSigner || null,
-      recoveryPublicKey: profile.recoveryPublicKey || null
+      recoveryPublicKey: profile.recoveryPublicKey || null,
+      network: profile.network === "main" ? "main" : "test"
     };
     if (stored.method !== "passkey" && stored.method !== "password") {
       throw new Error("Unknown signer method");
@@ -128929,7 +128964,7 @@ ${values.join("\n")}` : `${blockName} :`;
     }
   }
   async function withRead(fn) {
-    const client = UserClient.fromNetwork("test", null);
+    const client = UserClient.fromNetwork(profileNetwork(), null);
     try {
       return await fn(client);
     } finally {
@@ -128941,7 +128976,7 @@ ${values.join("\n")}` : `${blockName} :`;
     let client = null;
     try {
       account = await unlock(view.profile, password);
-      client = UserClient.fromNetwork("test", account);
+      client = UserClient.fromNetwork(profileNetwork(), account);
       return await fn(client, account);
     } finally {
       if (client) {
@@ -129055,7 +129090,8 @@ ${values.join("\n")}` : `${blockName} :`;
         vault: null,
         vaultOwned: false,
         coSigner: null,
-        recoveryPublicKey: null
+        recoveryPublicKey: null,
+        network: view.networkChoice === "main" ? "main" : "test"
       });
     } finally {
       dropAccount(account);
@@ -129079,7 +129115,8 @@ ${values.join("\n")}` : `${blockName} :`;
         vault: null,
         vaultOwned: false,
         coSigner: null,
-        recoveryPublicKey: null
+        recoveryPublicKey: null,
+        network: view.networkChoice === "main" ? "main" : "test"
       });
     } finally {
       seed.fill(0);
@@ -129105,7 +129142,8 @@ ${values.join("\n")}` : `${blockName} :`;
         vault: null,
         vaultOwned: false,
         coSigner: null,
-        recoveryPublicKey: null
+        recoveryPublicKey: null,
+        network: view.networkChoice === "main" ? "main" : "test"
       });
     } finally {
       seed.fill(0);
@@ -129132,6 +129170,9 @@ ${values.join("\n")}` : `${blockName} :`;
     await withUnlocked(password, async (client, account) => {
       const selfBalance = await client.client.getBalance(account, client.baseToken);
       if (selfBalance === 0n) {
+        if (profileNetwork() !== "test") {
+          throw new Error("This profile has no KTA for the network fee. Send KTA to this public key, then publish again.");
+        }
         logLine("Requesting test KTA for this profile, for fees.");
         const funded = await faucet(protocol.address(account));
         if (funded.httpStatus !== 200) {
@@ -129194,6 +129235,9 @@ ${values.join("\n")}` : `${blockName} :`;
       if (!current.vaultOwned) {
         const balance = await client.client.getBalance(current.vault, client.baseToken);
         if (balance === 0n) {
+          if (profileNetwork() !== "test") {
+            throw new Error("The storage account has no KTA. Send KTA to the storage account, then publish again.");
+          }
           logLine("Requesting test KTA for the storage account.");
           const funded = await faucet(current.vault);
           if (funded.httpStatus !== 200) {
@@ -129374,38 +129418,109 @@ ${values.join("\n")}` : `${blockName} :`;
       render();
     });
   }
-  function copyButton(text) {
-    return button("Copy", "ghost", async () => {
+  function copyButton(text, label) {
+    const name = label || "Copy";
+    const node = button(name, "ghost", async () => {
       try {
         await navigator.clipboard.writeText(text);
+        node.textContent = "Copied";
       } catch {
+        node.textContent = "Select and copy";
       }
+      setTimeout(() => {
+        node.textContent = name;
+      }, 1200);
     });
+    return node;
+  }
+  function guide() {
+    return h("ol", { class: "guide" }, [
+      "Use three Chrome profiles. This profile holds one key and no other.",
+      "Choose the test network first. The main network moves real KTA. This build is not audited.",
+      "Profile B creates a signer and copies its public key. Profile A creates a signer, writes the 24-word paper key, and pastes B.",
+      "Profile A publishes. Profile B clicks Join and pastes Copy multisig, Copy storage account, and Copy this profile, in that order. B does not create another paper key.",
+      "A page asks for a send. Approving adds one share and does not publish. Paste that payload into the other profile and publish within 5 minutes."
+    ].map((text) => h("li", {}, [text])));
+  }
+  function networkPicker() {
+    const test = h("input", { type: "radio", name: "network", value: "test" });
+    const main = h("input", { type: "radio", name: "network", value: "main" });
+    if (view.networkChoice === "main") main.checked = true;
+    else test.checked = true;
+    const confirm = h("input", { id: "main-ok", type: "checkbox" });
+    confirm.checked = view.mainConfirmed;
+    test.addEventListener("change", () => {
+      view.networkChoice = "test";
+    });
+    main.addEventListener("change", () => {
+      view.networkChoice = "main";
+    });
+    confirm.addEventListener("change", () => {
+      view.mainConfirmed = confirm.checked;
+    });
+    const testLabel = h("label", { class: "choice" }, []);
+    testLabel.append(test, document.createTextNode(" Test network. Practice KTA from the faucet."));
+    const mainLabel = h("label", { class: "choice" }, []);
+    mainLabel.append(main, document.createTextNode(" Main network. Real KTA. Not audited."));
+    const confirmLabel = h("label", { class: "choice" }, []);
+    confirmLabel.append(confirm, document.createTextNode(" This profile will sign on the main network. A mistake can move real KTA."));
+    return h("div", {}, [testLabel, mainLabel, confirmLabel]);
+  }
+  function requireNetworkChoice() {
+    const picked = document.querySelector('input[name="network"]:checked');
+    const name = picked && picked.value === "main" ? "main" : "test";
+    view.networkChoice = name;
+    if (name === "main") {
+      const box = document.getElementById("main-ok");
+      view.mainConfirmed = Boolean(box && box.checked);
+      if (!view.mainConfirmed) {
+        throw new Error("Confirm that this profile will sign on the main network");
+      }
+    }
   }
   function renderStart() {
     return h("div", {}, [
-      h("p", {}, ["This profile does not have a signer yet. It will keep one key and no other."]),
+      h("p", {}, ["This profile does not have a signer yet. It will keep one key and no other. Use a different Chrome profile for each of the other two keys."]),
+      guide(),
+      networkPicker(),
       h("div", { class: "row" }, [
         button("Create this profile's signer", "primary", async () => {
           view.error = null;
           try {
+            requireNetworkChoice();
             await createPasskey();
             view.screen = "role";
           } catch (err) {
-            view.passkeyFailed = true;
-            view.screen = "password-create";
-            if (err && err.message) view.error = err.message;
+            if (err && err.message === "Confirm that this profile will sign on the main network") {
+              view.error = err.message;
+            } else {
+              view.passkeyFailed = true;
+              view.screen = "password-create";
+              if (err && err.message) view.error = err.message;
+            }
           }
           render();
         }),
         button("Use a password-encrypted key", "ghost", () => {
-          view.passkeyFailed = true;
-          view.screen = "password-create";
+          view.error = null;
+          try {
+            requireNetworkChoice();
+            view.passkeyFailed = true;
+            view.screen = "password-create";
+          } catch (err) {
+            view.error = err.message || String(err);
+          }
           render();
         }),
         button("Restore the paper key this extension showed", "ghost", () => {
-          view.passkeyFailed = true;
-          view.screen = "restore";
+          view.error = null;
+          try {
+            requireNetworkChoice();
+            view.passkeyFailed = true;
+            view.screen = "restore";
+          } catch (err) {
+            view.error = err.message || String(err);
+          }
           render();
         })
       ])
@@ -129499,7 +129614,7 @@ ${values.join("\n")}` : `${blockName} :`;
       h("p", {}, ["Give this public key to the other profile. Then either create the 2-of-3, or join one the other profile already published."]),
       kv([["This profile", profile.publicKey]]),
       h("div", { class: "row" }, [
-        copyButton(profile.publicKey),
+        copyButton(profile.publicKey, "Copy this public key"),
         button("Create the 2-of-3", "primary", async () => {
           view.error = null;
           if (profile.recoveryPublicKey) {
@@ -129536,6 +129651,7 @@ ${values.join("\n")}` : `${blockName} :`;
       h("p", {}, ["These 24 words are the third key. This page shows them once. They are not stored. Two of the three keys must sign a send."]),
       view.phrase ? h("div", { class: "words", id: "words" }, view.phrase.split(" ").map((word, index) => h("span", {}, [index + 1 + ". " + word]))) : null,
       kv([["Paper key public key", view.recoveryPublic || ""]]),
+      copyButton(view.recoveryPublic || "", "Copy paper key public key"),
       label,
       h("div", { class: "row" }, [
         button("Clear the phrase from this page", "warn", async () => {
@@ -129568,7 +129684,7 @@ ${values.join("\n")}` : `${blockName} :`;
     return h("div", {}, [
       passwordNote(),
       waitingNote(),
-      h("p", {}, ["Paste the other profile's public key. This publishes a 2-of-3 multisig and a storage account on the test network, then makes the multisig the only owner. A multisig address cannot be the account on a block, so sends move test KTA from the storage account."]),
+      h("p", {}, ["Paste the other profile's public key. This publishes a 2-of-3 multisig and a storage account on the " + networkWord() + ", then makes the multisig the only owner. A multisig address cannot be the account on a block, so sends move KTA from the storage account. On the main network this profile and the storage account must already hold KTA. There is no faucet."]),
       kv([
         ["This profile", view.profile.publicKey],
         ["Paper key public key", view.profile.recoveryPublicKey]
@@ -129577,7 +129693,7 @@ ${values.join("\n")}` : `${blockName} :`;
       view.profile.method === "password" ? field("Password", h("input", { id: "password", type: "password", autocomplete: "current-password" })) : null,
       h("pre", { id: "log", class: "log" }, [view.log]),
       h("div", { class: "row" }, [
-        button("Publish on the test network", "primary", async () => {
+        button("Publish on the " + networkWord(), "primary", async () => {
           const password = takePassword();
           const other = coSigner.value;
           view.busy = true;
@@ -129597,7 +129713,24 @@ ${values.join("\n")}` : `${blockName} :`;
             if (view.screen === "home") readBalances();
           }
         }),
-        refuseButton()
+        refuseButton(),
+        !view.profile.multisig ? button("This profile should join instead", "ghost", async () => {
+          view.busy = true;
+          view.error = null;
+          render();
+          try {
+            await saveProfile({ ...view.profile, recoveryPublicKey: null });
+            view.phrase = null;
+            view.recoveryPublic = null;
+            view.screen = "join";
+            view.notice = "The paper key public key was removed from this profile. Join the 2-of-3 the other profile published.";
+          } catch (err) {
+            view.error = err.message || String(err);
+          } finally {
+            view.busy = false;
+            render();
+          }
+        }) : null
       ])
     ]);
   }
@@ -129608,11 +129741,11 @@ ${values.join("\n")}` : `${blockName} :`;
     return h("div", {}, [
       passwordNote(),
       waitingNote(),
-      h("p", {}, ["Paste the multisig, the storage account, and the other signer. This profile does not make another paper key."]),
+      h("p", {}, ["On the profile that published, use the labeled buttons in this order. This profile does not make another paper key."]),
       kv([["This profile", view.profile.publicKey]]),
-      field("Multisig", multisig),
-      field("Storage account", vault),
-      field("Other signer public key", coSigner),
+      field("Multisig \u2014 from Copy multisig", multisig),
+      field("Storage account \u2014 from Copy storage account", vault),
+      field("Other signer \u2014 from Copy this profile", coSigner),
       h("div", { class: "row" }, [
         button("Save", "primary", async () => {
           view.busy = true;
@@ -129647,16 +129780,26 @@ ${values.join("\n")}` : `${blockName} :`;
     return h("div", {}, [
       passwordNote(),
       waitingNote(),
-      h("p", {}, ["Sends move test KTA from the storage account. This profile adds one signature share. Paste the other profile's payload here. Nothing is published until two shares are attached."]),
+      h("p", {}, ["Sends move KTA from the storage account. This profile adds one signature share. Paste the other profile's payload here. Nothing is published until two shares are attached. Finish both shares within 5 minutes of the block time."]),
+      h("ol", { class: "guide" }, [
+        "On the first profile, set Other signer to the key that will add the second share, then save it.",
+        "A site calls send. Approve one share. That does not publish.",
+        "Copy the payload into this box on the second profile and publish. The publishing profile pays the fee from its own KTA."
+      ].map((text) => h("li", {}, [text]))),
       kv([
         ["This profile", profile.publicKey],
         ["Multisig", profile.multisig],
         ["Storage account", profile.vault],
         ["Other signer", profile.coSigner],
         ["Paper key public key", profile.recoveryPublicKey || ""],
+        ["Network", networkWord()],
         ["Balances", balance, "balance-line"]
       ]),
-      h("div", { class: "row" }, [copyButton(profile.publicKey), copyButton(profile.multisig), copyButton(profile.vault)]),
+      h("div", { class: "row" }, [
+        copyButton(profile.publicKey, "Copy this profile"),
+        copyButton(profile.multisig, "Copy multisig"),
+        copyButton(profile.vault, "Copy storage account")
+      ]),
       field("Other signer used on the next send", coSigner),
       h("div", { class: "row" }, [
         button("Save other signer", "ghost", async () => {
@@ -129672,7 +129815,7 @@ ${values.join("\n")}` : `${blockName} :`;
           }
           render();
         }),
-        button("Request test KTA for fees", "ghost", async () => {
+        profileNetwork() === "test" ? button("Request test KTA for fees", "ghost", async () => {
           view.busy = true;
           view.error = null;
           render();
@@ -129688,8 +129831,9 @@ ${values.join("\n")}` : `${blockName} :`;
             render();
             readBalances();
           }
-        })
+        }) : null
       ]),
+      profileNetwork() === "main" ? h("p", { class: "muted" }, ["There is no faucet on the main network. The profile that publishes pays the fee from its own KTA."]) : null,
       h("h2", {}, ["Paste a payload"]),
       paste,
       h("div", { class: "row" }, [
@@ -129720,18 +129864,20 @@ ${values.join("\n")}` : `${blockName} :`;
     const amount = described.token === draft.baseToken ? protocol.formatDecimalAmount(described.amount) + " KTA" : described.amount.toString() + " raw units";
     return h("div", {}, [
       passwordNote(),
-      h("p", {}, ["Nothing is signed until you approve. The publishing profile pays the fee from its own test KTA. One share is not published."]),
+      h("p", {}, ["Nothing is signed until you approve. The profile that publishes pays the fee from its own KTA. One share is not published. Both shares must be published within 5 minutes of the block time."]),
       kv([
         [originLabel, draft.origin || "\u2014"],
         ["Destination", described.to],
         ["Token", described.token],
         ["Amount", amount],
-        ["Fee", draft.feeError ? draft.feeError : feeText(draft.fees, draft.baseToken)],
+        ["Fee", draft.feeError ? "The network did not return a fee quote. The profile that publishes pays the fee from its own KTA." : feeText(draft.fees, draft.baseToken)],
+        ["Block time", described.date || "\u2014"],
         ["Storage account", described.account],
         ["Multisig", described.multisig],
         ["Signers", described.leaves.join(" and ")],
         ["Shares attached", String(draft.shares.length)]
       ]),
+      draft.feeError ? h("p", { class: "muted" }, [draft.feeError]) : null,
       view.profile.method === "password" ? field("Password", h("input", { id: "password", type: "password", autocomplete: "current-password" })) : null,
       h("div", { class: "row" }, [
         button(approveLabel(), "primary", () => {
@@ -129754,7 +129900,7 @@ ${values.join("\n")}` : `${blockName} :`;
       h("p", {}, ["Connecting does not sign anything."]),
       kv([
         ["Origin", view.request.origin || "unknown"],
-        ["Network", "test"],
+        ["Network", networkWord()],
         ["This profile", profile.publicKey],
         ["Multisig", profile.multisig],
         ["Storage account", profile.vault]
@@ -129762,7 +129908,7 @@ ${values.join("\n")}` : `${blockName} :`;
       h("div", { class: "row" }, [
         button("Approve connection", "primary", () => {
           respond({
-            network: "test",
+            network: profileNetwork(),
             publicKey: profile.publicKey,
             multisig: profile.multisig,
             vault: profile.vault
@@ -129782,10 +129928,10 @@ ${values.join("\n")}` : `${blockName} :`;
     const area = h("textarea", { id: "payload", readonly: "readonly" });
     area.value = pretty;
     return h("div", {}, [
-      outcome.published ? h("div", { class: "ok" }, ["Published on the test network. Block " + outcome.blockHash + "."]) : h("div", { class: "note" }, ["One share is attached. This was not published. Paste this payload into the same extension in the other Chrome profile."]),
+      outcome.published ? h("div", { class: "ok" }, ["Published on the " + networkWord() + ". Block " + outcome.blockHash + "."]) : h("div", { class: "note" }, ["One share is attached. This was not published. Paste this payload into the same extension in the other Chrome profile."]),
       area,
       h("div", { class: "row" }, [
-        copyButton(pretty),
+        copyButton(pretty, "Copy payload"),
         button("Back to this profile", "ghost", () => {
           view.result = null;
           view.screen = "home";
@@ -129798,10 +129944,14 @@ ${values.join("\n")}` : `${blockName} :`;
   function render() {
     const root = document.getElementById("app");
     root.replaceChildren(banner(), h("h1", {}, ["Keeta multisig signer"]));
-    if (view.error) root.append(h("div", { class: "err" }, [view.error]));
+    if (view.error) {
+      const shown = plainError(view.error);
+      root.append(h("div", { class: "err" }, [shown]));
+      if (shown !== view.error) root.append(h("p", { class: "muted" }, [view.error]));
+    }
     if (view.notice) root.append(h("div", { class: "ok" }, [view.notice]));
     if (view.screen === "loading" || view.screen === "send-loading") {
-      root.append(h("p", {}, [view.screen === "send-loading" ? "Reading the request from the test network. Nothing is signed yet." : "Loading."]));
+      root.append(h("p", {}, [view.screen === "send-loading" ? "Reading the request. Nothing is signed yet." : "Loading."]));
       return;
     }
     const screens = {

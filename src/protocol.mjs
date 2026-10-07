@@ -1,15 +1,23 @@
 /**
- * Test-network block rules for the 2-of-3 signer.
- * The caller passes the Keeta client. This file does not choose a network
- * other than the test network id, and it does not keep key material.
+ * Block rules for the 2-of-3 signer.
+ * The caller passes the Keeta client and the network id.
+ * This file does not keep key material.
  */
 export const SALT_LABEL = 'github.com/surfingdegen/keeta-multisig/signer/v1';
 export const FORBIDDEN_SALT_LABEL = 'keeta.com/wallet/seed/v1';
 export const TEST_NETWORK_ID = 1413829460n;
+export const MAIN_NETWORK_ID = 21378n;
 export const TOKEN_DECIMALS = 18;
 
 if (SALT_LABEL === FORBIDDEN_SALT_LABEL) {
   throw new Error('Refusing the wallet salt');
+}
+
+export function networkNameFromId(id) {
+  const value = typeof id === 'bigint' ? id : BigInt(id);
+  if (value === TEST_NETWORK_ID) return 'test';
+  if (value === MAIN_NETWORK_ID) return 'main';
+  throw new Error('The block is on an unknown network');
 }
 
 export function createProtocol(KeetaNet) {
@@ -81,7 +89,7 @@ export function createProtocol(KeetaNet) {
     const network = typeof unsigned.network === 'bigint' ? unsigned.network : BigInt(unsigned.network);
     if (unsigned.version !== 2) throw new Error('The block version is not 2');
     if (unsigned.purpose !== Block.Purpose.GENERIC) throw new Error('The block purpose is not a send');
-    if (network !== TEST_NETWORK_ID) throw new Error('The block is not on the test network');
+    const networkName = networkNameFromId(network);
     if (!unsigned.operations || unsigned.operations.length !== 1) {
       throw new Error('The block must contain one SEND');
     }
@@ -97,7 +105,9 @@ export function createProtocol(KeetaNet) {
       token: address(op.token),
       amount,
       leaves,
-      hash: unsigned.hash.toString()
+      hash: unsigned.hash.toString(),
+      network: networkName,
+      date: unsigned.date instanceof Date ? unsigned.date.toISOString() : String(unsigned.date)
     };
   }
 
@@ -151,6 +161,9 @@ export function createProtocol(KeetaNet) {
   }
 
   function assertProfile(described, profile) {
+    if (profile.network && described.network !== profile.network) {
+      throw new Error('The block is on a different network than this profile');
+    }
     if (described.account !== profile.vault) {
       throw new Error("The block account is not this profile's vault");
     }
@@ -247,7 +260,7 @@ export function createProtocol(KeetaNet) {
   function payloadFrom(json, shares, statedOrigin) {
     return {
       v: 1,
-      network: 'test',
+      network: networkNameFromId(json.network),
       statedOrigin: statedOrigin || null,
       unsigned: json,
       shares
@@ -261,8 +274,11 @@ export function createProtocol(KeetaNet) {
       if (!text) throw new Error('Paste the payload');
       payload = JSON.parse(text);
     }
-    if (!payload || payload.v !== 1 || payload.network !== 'test' || !payload.unsigned) {
-      throw new Error('This is not a test-network payload from this extension');
+    if (!payload || payload.v !== 1 || (payload.network !== 'test' && payload.network !== 'main') || !payload.unsigned) {
+      throw new Error('This is not a payload from this extension');
+    }
+    if (networkNameFromId(payload.unsigned.network) !== payload.network) {
+      throw new Error('The payload network does not match the block');
     }
     if (!Array.isArray(payload.shares)) throw new Error('The payload has no share list');
     if (payload.unsigned.signatures || payload.unsigned.signature) {
