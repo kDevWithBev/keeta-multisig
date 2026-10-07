@@ -1,0 +1,31 @@
+{
+  "manifest_version": 3,
+  "name": "Keeta multisig signer",
+  "version": "0.1.0",
+  "description": "Test network only. One signer key in this Chrome profile.",
+  "action": {
+    "default_title": "Keeta multisig signer",
+    "default_popup": "popup.html"
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "permissions": ["storage"],
+  "host_permissions": [
+    "https://*.keeta.com/*",
+    "https://faucet.test.keeta.com/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": ["http://*/*", "https://*/*", "file://*/*"],
+      "js": ["content.js"],
+      "run_at": "document_start"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["inpage.js"],
+      "matches": ["http://*/*", "https://*/*", "file://*/*"]
+    }
+  ]
+}

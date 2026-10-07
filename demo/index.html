@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Keeta multisig demo</title>
+  <style>
+    body { margin: 0; background: #f3efe4; color: #1b1914; font: 16px/1.45 Georgia, serif; }
+    main { width: min(640px, calc(100% - 32px)); margin: 0 auto; padding: 28px 0 48px; }
+    button, input { font: inherit; }
+    input { display: block; width: 100%; margin: 4px 0 12px; padding: 8px; border: 1px solid #1b1914; background: #fffdf8; }
+    button { border: 1px solid #1b1914; background: #1b1914; color: #f3efe4; padding: 8px 12px; cursor: pointer; }
+    pre { white-space: pre-wrap; word-break: break-all; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Test network only</h1>
+    <p>This page uses <code>window.keetaMultisig</code> injected by the unpacked extension. It does not use a server. Load the extension, then open this file. For a <code>file://</code> page, turn on “Allow access to file URLs” for the extension.</p>
+    <p><button id="connect" type="button">Connect</button></p>
+    <label>Destination <input id="to" autocomplete="off" spellcheck="false"></label>
+    <label>Amount, decimal KTA <input id="amount" value="0.01" autocomplete="off"></label>
+    <p><button id="send" type="button">Request send</button></p>
+    <pre id="out">The extension has not answered yet.</pre>
+  </main>
+  <script>
+    function show(value) {
+      document.getElementById('out').textContent = typeof value === 'string' ? value : JSON.stringify(value, null, 2);
+    }
+    function provider() {
+      if (!window.keetaMultisig) throw new Error('The extension is not injected on this page.');
+      return window.keetaMultisig;
+    }
+    document.getElementById('connect').addEventListener('click', function () {
+      provider().connect().then(show).catch(function (err) { show(err.message); });
+    });
+    document.getElementById('send').addEventListener('click', function () {
+      provider().send({
+        to: document.getElementById('to').value.trim(),
+        amount: document.getElementById('amount').value.trim()
+      }).then(show).catch(function (err) { show(err.message); });
+    });
+  </script>
+</body>
+</html>

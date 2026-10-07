@@ -1,14 +1,18 @@
 {
   "name": "keeta-multisig",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "private": true,
   "license": "MIT",
   "type": "module",
-  "description": "Test-network probe for a 2-of-3 Keeta multisig identifier. Not a wallet.",
+  "description": "Test-network unpacked Chrome extension for a 2-of-3 Keeta multisig. Not audited.",
   "scripts": {
-    "probe": "node scripts/probe-multisig.mjs"
+    "probe": "node scripts/probe-multisig.mjs",
+    "check": "node scripts/check-shares.mjs && node scripts/check-payload.mjs",
+    "build": "node scripts/build-extension.mjs"
   },
   "dependencies": {
-    "@keetanetwork/keetanet-client": "^0.18.7"
+    "@keetanetwork/keetanet-client": "0.18.7",
+    "bip39": "3.1.0",
+    "esbuild": "0.25.0"
   }
 }
