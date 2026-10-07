@@ -72,7 +72,7 @@ From the tagged commit:
 ```
 git clone https://github.com/surfingdegen/keeta-multisig.git
 cd keeta-multisig
-git checkout v0.1.0
+git checkout v0.1.1
 ```
 
 Chrome: `chrome://extensions` → Developer mode → Load unpacked → the `extension/` directory in that checkout.

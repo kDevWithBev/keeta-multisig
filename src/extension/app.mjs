@@ -1,7 +1,10 @@
+import { Buffer } from 'buffer';
 import KeetaNet from '@keetanetwork/keetanet-client/client/index-browser.js';
 import { KeetaPasskeyPRFKeyPairFactory } from '@keetanetwork/keetanet-client/lib/utils/external-keys/passkey-prf.js';
 import { entropyToMnemonic, generateMnemonic, validateMnemonic } from 'bip39';
 import { FORBIDDEN_SALT_LABEL, SALT_LABEL, createProtocol } from '../protocol.mjs';
+
+globalThis.Buffer = Buffer;
 
 const { Account, Block, Permissions } = KeetaNet.lib;
 const { UserClient } = KeetaNet;

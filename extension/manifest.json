@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Keeta multisig signer",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Test network only. One signer key in this Chrome profile.",
   "action": {
     "default_title": "Keeta multisig signer",

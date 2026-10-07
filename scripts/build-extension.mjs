@@ -11,7 +11,9 @@ await build({
   target: ['chrome114'],
   outfile,
   legalComments: 'none',
-  logLevel: 'info'
+  logLevel: 'info',
+  inject: ['src/extension/buffer-shim.mjs'],
+  define: { global: 'globalThis' }
 });
 
 const source = await readFile('src/extension/app.mjs', 'utf8');
