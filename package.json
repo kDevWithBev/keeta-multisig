@@ -1,0 +1,14 @@
+{
+  "name": "keeta-multisig",
+  "version": "0.0.0",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "description": "Test-network probe for a 2-of-3 Keeta multisig identifier. Not a wallet.",
+  "scripts": {
+    "probe": "node scripts/probe-multisig.mjs"
+  },
+  "dependencies": {
+    "@keetanetwork/keetanet-client": "^0.18.7"
+  }
+}
