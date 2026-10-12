@@ -12,7 +12,7 @@ You submit this yourself. The publisher account has to be yours.
 - Summary: 2-of-3 Keeta signer. One key per Chrome profile. Nothing is published until two profiles sign. Not audited.
 - Category: Productivity
 - Language: English
-- Privacy policy URL: `https://github.com/surfingdegen/keeta-multisig/blob/main/PRIVACY.md`
+- Privacy policy URL: `https://github.com/kDevWithBev/keeta-multisig/blob/main/PRIVACY.md`
 
 The store sometimes rejects a GitHub blob URL. If it does, publish PRIVACY.md on a normal web page and use that address.
 

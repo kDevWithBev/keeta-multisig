@@ -20,4 +20,4 @@ A site that calls `window.keetaMultisig` can receive the public addresses after 
 
 ## Contact
 
-The source is [github.com/surfingdegen/keeta-multisig](https://github.com/surfingdegen/keeta-multisig).
+The source is [github.com/kDevWithBev/keeta-multisig](https://github.com/kDevWithBev/keeta-multisig).

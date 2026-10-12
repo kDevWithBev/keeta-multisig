@@ -50,7 +50,7 @@ Each profile holds one signer and no other.
 
 1. Load the extension in profile A and profile B.
 2. Profile B creates its signer and copies its public key.
-3. Profile A creates its signer. It tries a passkey with the salt label `github.com/surfingdegen/keeta-multisig/signer/v1`, which is not `keeta.com/wallet/seed/v1`. If the passkey ceremony fails, the screen says the profile keeps a password-encrypted key in extension storage.
+3. Profile A creates its signer. It tries a passkey with the salt label `github.com/surfingdegen/keeta-multisig/signer/v1` (kept from the original account name on purpose: changing it would change every passkey-derived key), which is not `keeta.com/wallet/seed/v1`. If the passkey ceremony fails, the screen says the profile keeps a password-encrypted key in extension storage.
 4. Profile A shows a 24-word paper key once. Write it on paper. It is not stored. That public key is the third signer.
 5. Profile A pastes profile B's public key and publishes the 2-of-3 and the storage account.
 6. Profile B pastes the multisig, the storage account, and profile A's public key.
@@ -66,7 +66,7 @@ To spend with the paper key, load the extension in a third profile and restore t
 ## Load it
 
 ```
-git clone https://github.com/surfingdegen/keeta-multisig.git
+git clone https://github.com/kDevWithBev/keeta-multisig.git
 cd keeta-multisig
 git checkout v0.2.0
 ```
