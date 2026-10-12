@@ -20,6 +20,10 @@ export const DEFAULT_POLICY = Object.freeze({
   perDestination24hLimitUsdc: usdc(500),
   maxSendsPerHour: 10,
   breaker: Object.freeze({ spikeFraction1h: 0.8, maxFailures1h: 3 }),
+  lockFloorMs: HOUR,
+  extendedLockMs: 2 * DAY,
+  kycMultiplier: 0.5,
+  scoreTiers: Object.freeze([['gold', 15, 0.25], ['silver', 5, 0.5], ['bronze', 1, 0.75], ['new', 0, 1]]),
   ops: Object.freeze({
     'loan-funding': 'borrower',
     'liquidation-payout': 'borrower-or-keelend',
@@ -80,7 +84,8 @@ export function canRelease(item, checks, ctx, policy = DEFAULT_POLICY) {
   if (!checks.ok || ctx.breaker?.tripped) return false;
   if (item.state === 'cancelled' || item.state === 'held') return false;
   if (ctx.now - item.proposedAt < policy.minProposalAgeMs) return false;
-  if (item.tier === 'locked' && ctx.now - item.proposedAt < policy.lockDelayMs) return false;
+  const lockMs = item.lockMs ?? policy.lockDelayMs;
+  if (item.tier === 'locked' && ctx.now - item.proposedAt < lockMs) return false;
   return true;
 }
 
@@ -110,4 +115,38 @@ export function nextState(state, event) {
     releasing: { published: 'sent', 'window-missed': 'releasing', unknown: 'stuck-send', 'check-failed': 'held' }
   };
   return (t[state] && t[state][event]) || state;
+}
+
+/** Points for one closed loan, weighted by amount and age (anti-gaming). */
+export function pointsFor({ repaidUsdc, daysOpen, outcome }) {
+  if (outcome !== 'on-time') return 0;
+  return Math.min(repaidUsdc / 10, 10) * Math.min(daysOpen / 7, 1);
+}
+
+/** Apply an outcome. Late: drop one tier. Liquidated/default: reset to 0 and flag. Log every change. */
+export function applyOutcome(rec, loan, policy = DEFAULT_POLICY) {
+  const before = rec.score || 0;
+  let score = before, pastDefault = !!rec.pastDefault;
+  if (loan.outcome === 'on-time') score += pointsFor(loan);
+  else if (loan.outcome === 'late') {
+    const mins = policy.scoreTiers.map((t) => t[1]).filter((m) => m <= before);
+    score = mins.length > 1 ? mins[1] : 0;
+  } else { score = 0; pastDefault = true; }
+  return { score, pastDefault, log: { loanId: loan.loanId, outcome: loan.outcome, before, after: score } };
+}
+
+export function tierOf(score, policy = DEFAULT_POLICY) {
+  return policy.scoreTiers.find(([, min]) => (score || 0) >= min);
+}
+
+/**
+ * Lock length for a spend. Only changes the delay; never bypasses caps, budgets,
+ * rate limit, allowlist, amount checks or the breaker. Use the cosigner's own score.
+ */
+export function lockFor({ amount, kyc = false, score = 0, pastDefault = false }, policy = DEFAULT_POLICY) {
+  if (amount <= policy.instantMaxUsdc) return 0;
+  const [name, , mult] = tierOf(score, policy);
+  let ms = policy.lockDelayMs * mult * (kyc ? policy.kycMultiplier : 1);
+  if (pastDefault || (name === 'new' && !kyc)) ms = Math.max(ms, policy.extendedLockMs);
+  return Math.round(Math.min(Math.max(ms, policy.lockFloorMs), policy.extendedLockMs));
 }
