@@ -1,38 +1,104 @@
-# Tiered approvals v2 (design, not wired in)
+# Tiered approvals v3 (design, not wired in)
 
-Status: design sketch. Nothing in the extension or in `scripts/` uses it. Not audited. The sketch is `src/policy/tiered.mjs`.
+Status: design only. Nothing in the extension or in `scripts/` uses it. Not audited.
+The sketch in `src/policy/tiered.mjs` follows the **older v2 design** and is now out of date. Where the two disagree, this doc wins: the sketch takes loan data from the caller, sets the KYC discount on by default and accepts plain numbers as amounts.
 
 ## Honest limitations (read first)
 
-- **Tiers are enforced by software.** Keeta enforces the 2-of-3 quorum and nothing else. The network can't tell a small spend from a large one, and it doesn't know about the lock.
-- **The bot holds two keys:** the keeper key and a separate cosigner key. Together they meet the quorum without a human. Spends of $100 or less therefore have **no human protection**, and larger spends are protected only by the delay, the checks and the human's ability to cancel. The human doesn't sign.
-- **The keys must be on separate infrastructure:** a different host, provider and set of credentials. If one compromise reaches both keys, it can spend anything, and every rule here is bypassed. The cosigner must run its own checks. It must not trust the keeper's word.
-- **The lock is off-chain.** Representatives refuse blocks older than about 5 minutes, so nothing is pre-signed. A locked spend is just a stored *proposal*. The block is built fresh and signed by both keys only at release.
-- **The third key is for recovery.** The human's paper or hardware key is kept offline. With it plus one bot key, the human can move the funds to safety.
+- **Tiers are enforced by software.** Keeta enforces the 2-of-3 quorum and nothing else. The network can't tell a small spend from a large one, and it doesn't know about locks.
+- **The two bot keys meet the quorum without a human.** Signers are the keeper key (VPS), the cosigner key (separate VPS, Google Cloud KMS) and the human key (offline). The human is a **backstop**, not in the hot path. The protection comes from the cosigner refusing to sign anything that isn't a committed log entry, plus independent alerts and caps.
+- **The lock is off-chain.** Representatives refuse blocks whose time is more than about 5 minutes off, so nothing is pre-signed. A locked spend is a stored proposal; the block is built fresh and signed at release.
+- **If the keeper and cosigner are both compromised, every rule here can be bypassed.** The keys must be on separate hosts, providers and credentials.
 
-Safer alternative: keep automated spends on a capped hot account outside the multisig, and use the multisig only for refills.
+Safer alternative still stands: keep automated spends on a capped hot account and use the multisig only for refills (see Open items, C2).
+
+## Definitions
+
+- **Spend:** any USDC (or other token) leaving a KeeLend **payout address** that is tied to a loan: loan funding, liquidation payout, refund or sweep. Every spend must match exactly one committed log entry.
+- **Amounts:** integer base units as strings in the log (USDC has 6 decimals, so `"100000000"` = 100 USDC). Never floats.
+- **Points:** integer **millipoints** (1 point = 1000), so score math has no floating point.
+- **Release:** the cosigner and keeper both sign a freshly built block that sends the spend; the spend counts as sent once the block is published and found on-chain by hash.
+- **On time:** decided by the ledger, not server clocks (see Ledger time below).
+
+### Ledger time (what "the block is the clock" means on Keeta)
+
+The owner's intent: the ledger is the clock, so a repayment that lands at or before the deadline is on time.
+
+What we checked in `@keetanetwork/keetanet-client` 0.18.7 (`lib/block/index.d.ts`, `lib/vote.d.ts`): Keeta is a **per-account block lattice**. Each block has `previous` (the hash of that account's prior block) and a `date`, and votes carry `validityFrom`/`validityTo`. There is **no global block number** shared across accounts, so "repayment block number ≤ deadline block number" can't be compared directly. A block's `date` is set by its builder, but representatives only accept blocks whose `date` is within about 5 minutes of their own clocks.
+
+**Rule chosen:** a repayment is **on time if its block's network `date` ≤ the loan's deadline** (a UTC instant recorded in the loan's log entry when it is opened), **and** the block is confirmed on-chain. The roughly 5-minute tolerance the representatives allow is accepted. The anchor chain is used as a backstop: a repayment block that isn't confirmed before the **first anchor published after the deadline** is late, whatever its `date` says. The cosigner records the repayment block hash, its `date` and the on-time result in the log.
+
+## Source of truth: the integrity log
+
+The hash-chained integrity log is the **only** source of loan facts and payouts.
+
+- **The cosigner writes; the keeper only reads.** The keeper reads the log and **proposes** the payouts it implies. It is a messenger, not a bookkeeper: it has no key that can write to the log, and nothing it says becomes a fact.
+- **The cosigner writes loan entries only after checking the on-chain facts itself**, never from data the keeper provides:
+  - the borrower's collateral deposit block to the vault (looked up by hash on-chain),
+  - the collateral amount and token,
+  - the borrower address (the deposit's sender),
+  - the price inputs (spot and 30-minute average from its own sources, with the same sanity bounds as before),
+  - repayments, from their on-chain blocks (see Ledger time).
+- **The cosigner signs a payout only if it matches a committed log entry:** same op, loan id, amount, token, destination and source account, not already paid, and every check below passes. Anything else is refused and raises an alert.
+- **The human signer is a backstop:** freeze (trip the breaker), force review of a pending item, cancel a locked item, or recover funds with the offline key plus one bot key. The human isn't needed for normal operation.
+
+### Log format (supersedes the keeper's trust log)
+
+- This log **replaces** the keeper's existing trust log (`keeper/trustlog.mjs` in keelend-ops). That log becomes **legacy and read-only**. Nothing new is written to it, and when the two disagree the hash-chained integrity log wins.
+- Format: **keep the existing one.** JSON Lines; `hash = sha256(canonical(record without hash and sig))`, with canonical = sorted keys, no whitespace, integers only (RFC 8785 for the values used); `seq` with no gaps; `prevHash`; and `sig` from the log-write key. Amounts are base-unit strings and points are integer millipoints. (An earlier draft said SHA3-256; that's dropped so the logs match.)
+- Entries are never edited in place. A correction is a new entry that references the one it corrects.
+
+## Keys on the cosigner (three separate KMS keys)
+
+| Key | Signs | Notes |
+|---|---|---|
+| Multisig signing key | Payout blocks | One of the 2-of-3 signers. |
+| Log-write key | Integrity log entries | Never signs blocks. |
+| Anchor key | Anchor blocks from a dedicated anchor account | Separate from the other two. An optional second anchor key in **another KMS region** can be used for failover. |
+
+### Cosigner host and IAM
+
+- **No JSON key file on the VPS.** It uses Workload Identity Federation (or the host's attached identity), with short-lived tokens.
+- **Sign-only** permission (`cloudkms.signerVerifier` or narrower) on these specific key versions, and nothing else: no key admin, no export, no other projects.
+- **Strict signing service.** The only code path to KMS accepts only:
+  1. a block whose hash and operations match a payout already committed in the log, or
+  2. an anchor block that contains the current head hash of the log.
+  Everything else is rejected before KMS is called.
+- **Every sign call raises an alert** (op, loan id, amount, destination, block hash). KMS Cloud Audit Logs (data access) are turned on and exported off the host, and the audit log is checked against the integrity log.
+- A compromised cosigner VPS can still *use* the keys within these rules. That's why alerts, the community watcher and caps matter.
+
+## Anchoring
+
+- The cosigner anchors the **current head hash** of the log to Keeta on a schedule (for example hourly) using the anchor key. Anchors are **hash checkpoints**: one anchor covers every entry before it.
+- **A missed or late anchor doesn't break anything.** The next anchor simply records the current head, which covers everything since the last one.
+- **Anchor gap alert:** if no anchor appears within the threshold (for example 2× the schedule), an alert fires from the cosigner side and from the watchers.
+- An anchor proves the log was in that state at that time. It does **not** prove the entries are true; that's what the cosigner's on-chain checks and the watchers are for.
+
+## Alerts (independent of the keeper)
+
+Alerts come from the cosigner and integrity-log side, and from community watchers, **never only from the keeper**, so a compromised keeper can't hide them. They fire on: every sign call, any refused signing request, a failed check, a breaker trip, a stuck send, an anchor gap, a chain break, and a spend with no matching entry.
 
 ## Tiers
 
-| Amount (USDC value) | Path |
+| Amount | Path |
 |---|---|
-| ≤ `instantMaxUsdc` (default **100**) | Released immediately: both bot keys sign once the checks pass. |
-| > `instantMaxUsdc` | Locked for `lockDelayMs` (default **24h**). The checks run again during the lock and at its end. The human can cancel at any time during the lock. If everything still passes at the end, both bot keys sign. |
+| ≤ `instantMaxUsdc` (default **100**) | Released after the checks pass and the 60s minimum delay. |
+| > `instantMaxUsdc` | Locked (see lock length). Checks rerun during the lock and right before release. The human can cancel or force review at any time. |
 
 KTA is valued at the **lower** of spot and the 30-minute average.
 
-## Checks (run by the cosigner, independently)
+## Checks (cosigner, independently, against the log)
 
-These run at proposal time, every `rescanIntervalMs` during the lock (default 15 min), and once more just before signing:
+At proposal time, every `rescanIntervalMs` (15 min) during a lock, and just before signing:
 
-1. The destination is on the allowlist for this op: the loan's borrower, the source address for a refund, or a KeeLend account.
-2. The amount matches the loan record.
-3. LTV and price sanity: spot is strictly between $0.01 and $5, spot and the 30-minute average agree within 3%, and the loan's state allows this op. For example, a liquidation payout requires LTV ≥ 52%.
-4. No duplicate: the same `op:loanId` isn't already sent, locked, held or stuck.
-5. Budgets and rate limit (below).
-6. The circuit breaker isn't tripped.
+1. A committed log entry exists for this exact op, loan, amount, token, source and destination.
+2. The destination fits the op: the borrower recorded from the deposit block, the source address for a refund, or a KeeLend account.
+3. Price sanity: spot strictly between $0.01 and $5, and spot within 3% of the 30-minute average; the loan state allows the op (for example, a liquidation needs LTV ≥ 52%).
+4. Not already sent, locked, held or stuck.
+5. Budgets and rate limit.
+6. The breaker isn't tripped.
 
-If any check fails during the lock, the proposal goes to `held` (an alert is raised and nothing is sent). A failed check also trips the breaker when it looks like tampering: a destination or amount mismatch.
+A failed check moves the item to `held`. A tamper-type failure (no entry, or an amount or destination mismatch) also trips the breaker.
 
 ## Off-chain protections (defaults)
 
@@ -40,77 +106,60 @@ If any check fails during the lock, the proposal goes to `held` (an alert is rai
 |---|---|
 | `instantMaxUsdc` | 100 |
 | `lockDelayMs` | 24h |
-| `minProposalAgeMs` (delay from proposal to settlement, even for instant spends) | 60 s |
-| `perTxMaxUsdc` (hard cap; above it, refuse) | 1,000 |
-| `rolling24hLimitUsdc` (all releases) | 1,500 |
+| `minProposalAgeMs` | 60 s |
+| `perTxMaxUsdc` (refuse above) | 1,000 |
+| `rolling24hLimitUsdc` | 1,500 |
 | `perDestination24hLimitUsdc` | 500 |
 | `maxSendsPerHour` | 10 |
-| Breaker: volume spike | 24h total ≥ 80% of the limit within 1h, or `maxSendsPerHour` reached |
-| Breaker: failures | 3 failed checks in 1h, or any tamper-type failure |
-| Breaker reset | **Manual only**, by the human |
+| Breaker | volume spike, 3 failures in 1h, any tamper failure, chain break, anchor mismatch |
+| Breaker reset | Manual only, by the human |
 
-When the breaker trips, **all** sends pause, instant ones included. Locks keep counting down, but nothing releases until the breaker is reset.
+## Lock length: KYC and repayment score (v2 rules, under review)
 
-## Lock length: KYC and repayment score
-
-The 24h lock for spends over $100 is the **base**. KYC and a borrower's repayment score adjust it. This is a borrower feature: repaying on time unlocks faster (and later cheaper) loans, which gives people a reason to come back.
-
-### Repayment score (off-chain, can start tracking now)
-
-- Stored in KeeLend's own records, keyed by **borrower address**. A **new address starts at 0**. The score follows the address, not the person.
-- Earned per loan **repaid on time** (from on-chain repayments, cross-checked with KeeLend's records). Points are weighted by repaid amount and loan age, so many tiny, short loans can't build a score that unlocks one big loan:
-  `points = min(repaidUsdc / 10, 10) × min(daysOpen / 7, 1)`, capped at 10 per loan.
-- A late payment downgrades the score by one tier. A **liquidation or default resets it to 0** and sets `pastDefault = true`, which extends the lock (see below).
-- Every score change is appended to the **trust log**, with the loan id, outcome, points and the score before and after, so anyone can check it.
-- Tracking can start before anything ships. Suggested record, one per closed loan:
-
-```json
-{ "borrower": "keeta_...", "loanId": "...", "openedAt": "ISO", "closedAt": "ISO",
-  "principalUsdc": "5.00", "repaidUsdc": "5.03", "outcome": "on-time|late|liquidated|default",
-  "repayBlocks": ["<hash>"], "trustLogRef": "<entry id>", "points": 0.36 }
-```
-
-Derived per address: `{ score, tier, pastDefault, loansRepaid, updatedAt }`.
-
-Score tiers (defaults): `new` < 1 · `bronze` ≥ 1 · `silver` ≥ 5 · `gold` ≥ 15.
-
-### Lock-length formula (defaults, all configurable)
+These are unchanged from v2, but see Open items H1 and H2. **The KYC discount is off by default** (`kycMultiplier: 1`) until the issuer names are pinned.
 
 ```
 if amount <= instantMax:                lock = 0
 lock = baseLock (24h)
-if kyc:                                 lock ×= 0.5
+if kyc (only once issuers are pinned):  lock ×= 0.5
 tier multiplier: gold 0.25 · silver 0.5 · bronze 0.75 · new 1.0
-if pastDefault or (tier == new and !kyc): lock = max(lock, extendedLock (48h))
-lock = clamp(lock, lockFloor (1h), extendedLock (48h))
+if pastDefault or (tier == new and !kyc): lock = max(lock, 48h)
+lock = clamp(lock, floor, 48h)
 ```
 
-Examples: unverified new address gets 48h. KYC'd new address gets 12h. KYC'd gold gets 3h. Unverified silver gets 12h. A past default gets 48h. The 1h floor applies to every spend over $100 unless the owner sets `lockFloorMs` to 0.
-
-### Safeguards (honest)
-
-- The lock mainly protects against a **compromised bot or compromised keys**, not against borrowers failing to repay. A shorter lock gives you less time to catch a theft. That's the trade-off.
-- Score and KYC **change only the lock length**. They never bypass the per-transaction cap, the 24h and per-destination budgets, the rate limit, the allowlist, the amount-matches-loan check, the duplicate check or the circuit breaker.
-- An attacker who controls the bot could also edit the off-chain score. Use the score stored by the **cosigner** (rebuilt from the trust log and on-chain repayments), never a score the keeper supplies.
-- KYC is checked as the keeper does today. Until issuer names are pinned, the KYC discount should stay off (`kycMultiplier: 1`).
+Score (millipoints): `points = min(repaid/10 USDC, 10) × min(daysOpen/7, 1)`, computed in integers, per on-time loan. Late = drop one tier; liquidation or default = 0 and `pastDefault`. Tiers: new < 1, bronze ≥ 1, silver ≥ 5, gold ≥ 15 points. Every change is a log entry written by the cosigner from on-chain repayment facts.
 
 ## Lifecycle
 
-`proposed → (instant) releasing → sent`
-`proposed → locked → releasing → sent`
-`locked → cancelled` (by the human) · `locked → held` (failed check) · `releasing → stuck-send` (unknown outcome: look the block up by hash and never resend)
+`proposed → releasing → sent` · `proposed → locked → releasing → sent` · `locked → cancelled | held` · `releasing → stuck-send` (look the block up by hash; never resend). A missed 5-minute window means building a fresh block within the same release decision.
 
-Nothing in `held`, `cancelled` or `stuck-send` is ever resent automatically. If the 5-minute signing window is missed, the spend goes back to `releasing` and gets a fresh block, while still inside the same release decision.
+## Community watcher
 
-## What the human sees
+Anyone can run a copy. It needs no keys.
 
-Each locked item shows: the op, `loanId`, amount and token, destination, why it's locked, the time left, the result of the latest scan, and a **Cancel** button. Alerts fire on a failed check, a breaker trip or a stuck send.
+- **Fetcher:** polls the Keeta explorer or API for USDC (and other token) transactions on the published payout addresses.
+- **Reader:** pulls log entries and checks the chain (sha256, `prevHash`, `seq`, signatures by the published log-write public key) against the published anchors.
+- **Comparator:** flags any spend without a committed entry, an amount or destination mismatch, an anchor gap past the threshold, and chain breaks or anchor mismatches.
 
-## Not covered
+KeeLend publishes this spec, the payout, vault and anchor account addresses, the log-write public key, the anchor schedule and the log itself, so watchers are independent. Borrower addresses in a public log are a privacy trade-off, so publish addresses only, with no personal data.
 
-- How the cosigner is deployed and how its keys are stored.
-- Storing the ledger and queue so they survive restarts. These must fail closed: if either can't be read, release nothing.
-- An audit.
+If Keeta adds smart contracts later, payout rules could move on-chain, and the watcher and log become an audit trail rather than the enforcement.
+
+## Open items (from the independent review)
+
+| ID | Item | Status |
+|---|---|---|
+| C1 | Loan data from the keeper | **Resolved in v3**: the cosigner verifies on-chain and writes the log. |
+| C3 | Alerts and cancel on the keeper | **Resolved in v3**: alerts from the cosigner and watchers; human backstop. |
+| C2 | No human limit on automated spends | Open. Add a daily auto-release cap that only the human can raise, well under 1,500, or use a capped hot account for small spends. |
+| H1 | Reputation shortens a lock that protects against key compromise | Open. Keep a fixed security floor (suggested 24h for anything over $100); let the score affect loan terms only, or require the human to go below the floor. |
+| H2 | One lock rule for every op | Open. Set rules per op; liquidations need a fast path with tight checks, not a 24–48h lock. |
+| H3–H5 | Cosigner holds several keys; KMS credentials; two logs | **Addressed in v3** (separate keys, IAM, strict signer, one log). The cosigner is still a high-value target. |
+| — | Input validation | Open. BigInt amounts only, `daysOpen ≥ 0`, finite values, config validated at startup. The sketch needs updating. |
+| — | KYC discount | Off by default (doc). The sketch still defaults to 0.5. |
+| — | Anti-gaming | Open. Higher thresholds, score decay, a minimum number of distinct loans, a points cap per window, and limits on reusing KYC certificates. |
+| — | Breaker vs rate limit | Open. The breaker trips at the same 10/hour as the rate limit; move it above the rate limit. |
+| — | Runbooks | Open. Broken chain or anchor mismatch (freeze, find the divergence, re-anchor after the human reviews) and cosigner or KMS downtime (human key plus keeper key to move funds to safety). |
 
 ## Schedule (rough timeframes)
 
@@ -127,14 +176,3 @@ A reminder of the expected order and effort. These are estimates, not commitment
 - Reputation tracking can start now, in parallel, since it needs no new infrastructure: begin recording closed-loan outcomes in KeeLend's records.
 - VPS deployment comes only after this doc lands (owner's decision).
 - Mainnet use comes after the testnet version has run cleanly; no date is set.
-
-## Integrity of the reputation log
-
-The score changes lock length, so the records behind it must be tamper-evident.
-
-1. **Append-only, hash-chained log.** Each entry stores `prevHash = SHA3-256(previous entry)` plus its own fields (address, loanId, outcome, points, new score, time). Editing, deleting, or reordering any past entry breaks every hash after it, so tampering is detectable by anyone replaying the chain. Entries are never updated in place; a correction is a new entry that references the one it corrects. (This mirrors the signed, hash-chained trust log already running on the KeeLend keeper.)
-2. **Keeper is read-only.** The keeper host can read the log and the derived scores but holds no key that can write to it. Every entry is signed with a separate log-write key; entries without a valid signature are rejected on replay.
-3. **External timestamp on Keeta.** On a schedule (for example hourly or daily) the latest chain head hash is anchored to Keeta in a small block from a dedicated anchor account. The network's block time then proves the log existed in that state at that time, so history can't be quietly rewritten later. Anchor costs are normal KTA network fees.
-4. **The cosigner owns writes.** The third signer, the small cosigner on its own VPS with its key in Google Cloud KMS, holds the log-write key and manages the reputation database. It rebuilds scores from on-chain repayments plus the log, and uses its own copy when deciding lock length. Keeping writes off the keeper host means a compromised keeper can neither inflate a score to shorten a lock nor hide a default.
-
-Checks anyone can run: replay the chain from the first entry, verify every signature and `prevHash`, and compare the head hash against the latest Keeta anchor. Any mismatch trips the circuit breaker and every score falls back to "new".
