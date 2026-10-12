@@ -111,3 +111,19 @@ Each locked item shows: the op, `loanId`, amount and token, destination, why it'
 - How the cosigner is deployed and how its keys are stored.
 - Storing the ledger and queue so they survive restarts. These must fail closed: if either can't be read, release nothing.
 - An audit.
+
+## Schedule (rough timeframes)
+
+A reminder of the expected order and effort. These are estimates, not commitments.
+
+| Step | Rough time |
+|---|---|
+| Spec and doc updates | A day or two |
+| VPS provisioning and key setup (cosigner host, separate from the keeper) | An afternoon |
+| Keeper bot wiring to the multisig | Two to three days, if the testnet behaves |
+| Discord outreach to Keeta Inc | Same day it's sent |
+| **Total for a working testnet version** | **About a week end to end** |
+
+- Reputation tracking can start now, in parallel, since it needs no new infrastructure: begin recording closed-loan outcomes in KeeLend's records.
+- VPS deployment comes only after this doc lands (owner's decision).
+- Mainnet use comes after the testnet version has run cleanly; no date is set.
