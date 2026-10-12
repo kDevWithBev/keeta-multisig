@@ -127,3 +127,14 @@ A reminder of the expected order and effort. These are estimates, not commitment
 - Reputation tracking can start now, in parallel, since it needs no new infrastructure: begin recording closed-loan outcomes in KeeLend's records.
 - VPS deployment comes only after this doc lands (owner's decision).
 - Mainnet use comes after the testnet version has run cleanly; no date is set.
+
+## Integrity of the reputation log
+
+The score changes lock length, so the records behind it must be tamper-evident.
+
+1. **Append-only, hash-chained log.** Each entry stores `prevHash = SHA3-256(previous entry)` plus its own fields (address, loanId, outcome, points, new score, time). Editing, deleting, or reordering any past entry breaks every hash after it, so tampering is detectable by anyone replaying the chain. Entries are never updated in place; a correction is a new entry that references the one it corrects. (This mirrors the signed, hash-chained trust log already running on the KeeLend keeper.)
+2. **Keeper is read-only.** The keeper host can read the log and the derived scores but holds no key that can write to it. Every entry is signed with a separate log-write key; entries without a valid signature are rejected on replay.
+3. **External timestamp on Keeta.** On a schedule (for example hourly or daily) the latest chain head hash is anchored to Keeta in a small block from a dedicated anchor account. The network's block time then proves the log existed in that state at that time, so history can't be quietly rewritten later. Anchor costs are normal KTA network fees.
+4. **The cosigner owns writes.** The third signer, the small cosigner on its own VPS with its key in Google Cloud KMS, holds the log-write key and manages the reputation database. It rebuilds scores from on-chain repayments plus the log, and uses its own copy when deciding lock length. Keeping writes off the keeper host means a compromised keeper can neither inflate a score to shorten a lock nor hide a default.
+
+Checks anyone can run: replay the chain from the first entry, verify every signature and `prevHash`, and compare the head hash against the latest Keeta anchor. Any mismatch trips the circuit breaker and every score falls back to "new".
