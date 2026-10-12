@@ -1,92 +1,70 @@
-# Tiered approvals (design, not wired in)
+# Tiered approvals v2 (design, not wired in)
 
 Status: design sketch. Nothing in the extension or in `scripts/` uses it. Not audited. The sketch is `src/policy/tiered.mjs`.
 
-## Read this first: what the network enforces
+## Honest limitations (read first)
 
-Keeta enforces the quorum of the multisig. Nothing else. A 2-of-3 needs two of its three keys on every spend, so one bot key alone cannot sign anything.
+- **Tiers are enforced by software.** Keeta enforces the 2-of-3 quorum and nothing else. The network can't tell a small spend from a large one, and it doesn't know about the lock.
+- **The bot holds two keys:** the keeper key and a separate cosigner key. Together they meet the quorum without a human. Spends of $100 or less therefore have **no human protection**, and larger spends are protected only by the delay, the checks and the human's ability to cancel. The human doesn't sign.
+- **The keys must be on separate infrastructure:** a different host, provider and set of credentials. If one compromise reaches both keys, it can spend anything, and every rule here is bypassed. The cosigner must run its own checks. It must not trust the keeper's word.
+- **The lock is off-chain.** Representatives refuse blocks older than about 5 minutes, so nothing is pre-signed. A locked spend is just a stored *proposal*. The block is built fresh and signed by both keys only at release.
+- **The third key is for recovery.** The human's paper or hardware key is kept offline. With it plus one bot key, the human can move the funds to safety.
 
-The tiers below are enforced **off-chain**, by software deciding when to add a signature. The network can't tell a "small" spend from a "large" one.
+Safer alternative: keep automated spends on a capped hot account outside the multisig, and use the multisig only for refills.
 
-To let the bot approve small spends by itself, the bot side has to control **two** of the three keys, for example:
-- the keeper key on the VPS, and
-- a separate cosigner service key on different infrastructure (a different host and provider, with its own credentials).
+## Tiers
 
-The result:
-- Small spends get **no human protection**. Their safety depends entirely on those two automated keys staying separate. If both are on the same VPS, or one compromise reaches both, an attacker can drain the account in "small" spends up to the limits below, and the limits are only as strong as the cosigner's own code.
-- Large spends need the human key (browser profile or paper key) plus one bot key.
+| Amount (USDC value) | Path |
+|---|---|
+| ≤ `instantMaxUsdc` (default **100**) | Released immediately: both bot keys sign once the checks pass. |
+| > `instantMaxUsdc` | Locked for `lockDelayMs` (default **24h**). The checks run again during the lock and at its end. The human can cancel at any time during the lock. If everything still passes at the end, both bot keys sign. |
 
-### Recommended alternative
+KTA is valued at the **lower** of spot and the 30-minute average.
 
-Keep small, automated spends on a **capped hot account outside the multisig**, owned by the keeper alone. Hold that account at a small balance (for example one or two days of expected loan volume). Use the 2-of-3 only for:
-- refilling the hot account (bot builds it, human countersigns), and
-- any single spend at or above the threshold.
+## Checks (run by the cosigner, independently)
 
-This gives the same day-to-day automation. The worst case on a keeper compromise is the hot balance, not the whole reserve, and the multisig keeps its 2-of-3 meaning. The policy below works for either setup; with the recommended setup, "auto-approve" means "spend from the hot account".
+These run at proposal time, every `rescanIntervalMs` during the lock (default 15 min), and once more just before signing:
 
-## Policy config
+1. The destination is on the allowlist for this op: the loan's borrower, the source address for a refund, or a KeeLend account.
+2. The amount matches the loan record.
+3. LTV and price sanity: spot is strictly between $0.01 and $5, spot and the 30-minute average agree within 3%, and the loan's state allows this op. For example, a liquidation payout requires LTV ≥ 52%.
+4. No duplicate: the same `op:loanId` isn't already sent, locked, held or stuck.
+5. Budgets and rate limit (below).
+6. The circuit breaker isn't tripped.
 
-| Setting | Default | Meaning |
-|---|---|---|
-| `thresholdUsdc` | `300` | Spends below this per transaction may be auto-approved. At or above it, they're queued for a human. |
-| `rolling24hLimitUsdc` | `600` | Total auto-approved USDC in any rolling 24 hours. Anything that would exceed it is queued, even if it's small on its own. This stops one large spend being split into many small ones. |
-| `perDestination24hLimitUsdc` | `300` | Same, for one destination address. |
-| `ops` | see below | Which kinds of spend the policy covers, and whether each kind may be auto-approved at all. |
-| `approvalTtlMs` | `24h` | How long a queued item waits for a human before it expires. |
-| `signWindowMs` | `5 min` | Keeta representatives refuse blocks older than about 5 minutes. The block is built fresh when the human approves. |
+If any check fails during the lock, the proposal goes to `held` (an alert is raised and nothing is sent). A failed check also trips the breaker when it looks like tampering: a destination or amount mismatch.
 
-KTA amounts are valued in USDC at the **lower** of spot and the 30-minute average, so a price spike can't make a large spend look small.
+## Off-chain protections (defaults)
 
-Covered ops:
-- `loan-funding`: USDC sent to a borrower when a vault funds. Auto-approval is allowed.
-- `liquidation-payout`: unpaid principal to inventory, interest plus fee to treasury, surplus USDC or unseized KTA back to the borrower. Auto-approval is allowed only to known KeeLend accounts or to the loan's own borrower.
-- `refund`: an expired vault or an overpayment going back to the sender. Auto-approval is allowed only back to the address the funds came from.
-- `sweep`: moving funds between KeeLend accounts, such as a hot-account refill. Never auto-approved; a human always signs.
+| Setting | Default |
+|---|---|
+| `instantMaxUsdc` | 100 |
+| `lockDelayMs` | 24h |
+| `minProposalAgeMs` (delay from proposal to settlement, even for instant spends) | 60 s |
+| `perTxMaxUsdc` (hard cap; above it, refuse) | 1,000 |
+| `rolling24hLimitUsdc` (all releases) | 1,500 |
+| `perDestination24hLimitUsdc` | 500 |
+| `maxSendsPerHour` | 10 |
+| Breaker: volume spike | 24h total ≥ 80% of the limit within 1h, or `maxSendsPerHour` reached |
+| Breaker: failures | 3 failed checks in 1h, or any tamper-type failure |
+| Breaker reset | **Manual only**, by the human |
 
-Anything else is **denied** unless explicitly listed.
+When the breaker trips, **all** sends pause, instant ones included. Locks keep counting down, but nothing releases until the breaker is reset.
 
-## Decision flow per loan action
+## Lifecycle
 
-1. The keeper proposes `{ op, loanId, to, token, amount, reason }`.
-2. Hard checks run first. Any failure means **deny**, not queue:
-   - `op` is a known op.
-   - `to` is allowed for that op: the borrower on record for `loanId`, the source address for a refund, or a KeeLend account.
-   - The amount matches the loan record (for example, funding equals the opened amount).
-   - The same `loanId` and op isn't already sent, queued or stuck. This matches the keeper's `keelend:<loanId>` replay rule.
-3. Tier check:
-   - op is `sweep` → **queue**
-   - amount ≥ `thresholdUsdc` → **queue**
-   - auto total in the last 24h plus this amount > `rolling24hLimitUsdc` → **queue**
-   - destination total in the last 24h plus this amount > `perDestination24hLimitUsdc` → **queue**
-   - otherwise → **auto**
-4. **Auto:** the bot signs (with its two keys, or from the hot account) and the amount is added to the rolling ledger.
-5. **Queue:** the loan goes to a held state (`awaiting-approval`), and nothing is sent.
+`proposed → (instant) releasing → sent`
+`proposed → locked → releasing → sent`
+`locked → cancelled` (by the human) · `locked → held` (failed check) · `releasing → stuck-send` (unknown outcome: look the block up by hash and never resend)
+
+Nothing in `held`, `cancelled` or `stuck-send` is ever resent automatically. If the 5-minute signing window is missed, the spend goes back to `releasing` and gets a fresh block, while still inside the same release decision.
 
 ## What the human sees
 
-Each queued item shows up in the extension's approval view, or as a pasted payload, with:
-- op, `loanId`, amount and token (raw and decimal), destination,
-- **reason** (for example "≥ 300 USDC threshold" or "24h limit would be exceeded"),
-- the loan's LTV and price inputs at queue time,
-- when it was queued and when it expires.
-
-The extension's existing checks still apply when the human signs:
-- exactly one SEND,
-- exactly two listed signers, one of them this profile,
-- the block account is the storage account,
-- the hash is stable.
-
-The `statedOrigin` and `reason` fields are labels only; the human must check the block fields themselves.
-
-## Timeout, rejection and expiry
-
-- The block is **built fresh at approval time**, not at queue time, because both signatures must land within about 5 minutes of the block time. The flow is: human clicks approve → bot builds the block → bot adds its share → human adds theirs → publish.
-- If that 5-minute window is missed, the item goes back to `awaiting-approval`, which needs a new click and a new block. It is never resent automatically.
-- On a human rejection, or when `approvalTtlMs` runs out, the loan goes to `held`. Nothing is ever resent automatically. Moving on from `held` needs a new human decision.
-- A send whose outcome is unknown follows the keeper's existing `stuck-send` rule: look up the block by hash, and never resend.
+Each locked item shows: the op, `loanId`, amount and token, destination, why it's locked, the time left, the result of the latest scan, and a **Cancel** button. Alerts fire on a failed check, a breaker trip or a stuck send.
 
 ## Not covered
 
-- Key storage for the cosigner service, and how it is deployed.
-- Making the rolling ledger survive restarts. It must be stored and must fail closed: if it can't be read, queue everything.
-- An audit. This is a sketch.
+- How the cosigner is deployed and how its keys are stored.
+- Storing the ledger and queue so they survive restarts. These must fail closed: if either can't be read, release nothing.
+- An audit.
